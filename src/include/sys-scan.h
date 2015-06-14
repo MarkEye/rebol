@@ -80,7 +80,7 @@ enum Value_Types {
 **	Delimiting Chars (encoded in the LEX_VALUE field)
 */
 enum LEX_DELIMIT_ENUM {
-	LEX_DELIMIT_SPACE,              /* 20 space */
+	LEX_DELIMIT_SPACE = 0,              /* 20 space */
 	LEX_DELIMIT_END_FILE,           /* 00 EOF */
 	LEX_DELIMIT_LINEFEED,           /* 0A line-feed */
 	LEX_DELIMIT_RETURN,             /* 0D return */
