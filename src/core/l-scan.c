@@ -324,7 +324,7 @@
 	if (c >= 0x80) {
 		n = Decode_UTF8_Char(bp, 0); // zero on error
 		(*bp)++; // skip char
-		return n;
+		return n == 0 ? -1 : n;
 	}
 
 	(*bp)++;
@@ -668,7 +668,21 @@
     }
 }
 
-
+/***********************************************************************
+*/
+#define ANGLE_WORD_CHARS "-=<|>+~"
+/*
+**      Angle words begin with < or > and span these 7 characters.
+**      A period disambiguates to tag, and may be not be in the tag:
+**      If the tag content start matches
+**        (zero or more = - < | > ~ + then)
+**        (zero or some periods then)
+**        (an optional : then)
+**        whitespace or ] / ) " { ; ( [ }
+**        AND does not match "/" (the closing tag special case, or CTSC)
+**      then an extra, non-content, period is required for mold or scan.
+*/
+      
 /***********************************************************************
 **
 */  static REBINT Scan_Token(SCAN_STATE *scan_state)
@@ -689,7 +703,7 @@
 ***********************************************************************/
 {
     REBCNT flags;
-    REBYTE *cp;
+    REBYTE *cp, *bp;
     REBINT type;
 
     flags = Prescan(scan_state);
@@ -727,12 +741,8 @@
             return TOKEN_PAREN_END;
 
         case LEX_DELIMIT_QUOTE:         /* " quote */
-            cp = Scan_Quote(cp, scan_state); // stores result string in BUF_MOLD
-            goto check_str;
-
         case LEX_DELIMIT_LEFT_BRACE:    /* { begin quote */
             cp = Scan_Quote(cp, scan_state);  // stores result string in BUF_MOLD
-        check_str:
             if (cp) {
                 scan_state->end = cp;
                 return TOKEN_STRING;
@@ -747,7 +757,7 @@
 
         case LEX_DELIMIT_SLASH:         /* probably / or / *   */
             while (*cp && *cp == '/') cp++;
-            if (IS_LEX_AT_LEAST_WORD(*cp) || *cp=='+' || *cp=='-' || *cp=='.') {
+            if (IS_LEX_AT_LEAST_WORD(*cp) || *cp=='+' || *cp=='-' || *cp=='.' || *cp == '<' || *cp == '>') {
 				// ///refine not allowed
             	if (scan_state->begin + 1 != cp) {
             		scan_state->end = cp;
@@ -756,15 +766,19 @@
 				scan_state->begin = cp;
 				flags = Prescan(scan_state);
 				scan_state->begin--;
-				type = TOKEN_REFINE;
 				// Fast easy case:
-		        if (ONLY_LEX_FLAG(flags, LEX_SPECIAL_WORD)) return type;
+		        if (ONLY_LEX_FLAG(flags, LEX_SPECIAL_WORD)) return TOKEN_REFINE;
+                // tag/word differentiation, mode 2: after /
+                if (*cp == '<' || *cp == '>') {
+                    while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
+                    if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                        scan_state->end = cp;
+                        return TOKEN_REFINE;
+                    }
+                }
+				type = TOKEN_REFINE;
 				goto scanword;
             }
-			if (cp[0] == '<' || cp[0] == '>') {
-	            scan_state->end = cp+1;
-				return -TOKEN_REFINE;
-			}
             scan_state->end = cp;
             return TOKEN_WORD;
 
@@ -801,35 +815,40 @@
             return TOKEN_FILE;
 
         case LEX_SPECIAL_COLON:         /* :word :12 (time) */
-            if (IS_LEX_NUMBER(cp[1])) return TOKEN_TIME;
+			if (IS_LEX_NUMBER(cp[1])
+                || (strchr("-+.,", cp[1]) && IS_LEX_NUMBER(cp[2]))
+                || (strchr("+-", cp[1]) && strchr(".,", cp[2]) && IS_LEX_NUMBER(cp[3]))
+               ) return TOKEN_TIME;
             if (ONLY_LEX_FLAG(flags, LEX_SPECIAL_WORD)) return TOKEN_GET;   /* common case */
 			if (cp[1] == '\'') return -TOKEN_WORD;
-			// Various special cases of < << <> >> > >= <=
 			if (cp[1] == '<' || cp[1] == '>') {
-				cp++;
-				if (cp[1] == '<' || cp[1] == '>' || cp[1] == '=') cp++;
-				if (!IS_LEX_DELIMIT(cp[1])) return -TOKEN_GET;
-				scan_state->end = cp+1;
-				return TOKEN_GET;
+                // tag/word differentiation, mode 2: after :
+                while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
+                if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                    scan_state->end = cp;
+                    return TOKEN_GET;
+                }
+				return -TOKEN_GET;
 			}
             type = TOKEN_GET;
             cp++;                       /* skip ':' */
             goto scanword;
 
         case LEX_SPECIAL_TICK:
-			if (IS_LEX_NUMBER(cp[1])) return -TOKEN_LIT;		// no '2nd
+			if (IS_LEX_NUMBER(cp[1])
+                || (strchr("-+.,", cp[1]) && IS_LEX_NUMBER(cp[2]))
+                || (strchr("+-", cp[1]) && strchr(".,", cp[2]) && IS_LEX_NUMBER(cp[3]))
+               ) return -TOKEN_LIT;		// no '2nd or '.2nd or '-2nd or '-.2nd
 			if (cp[1] == ':') return -TOKEN_LIT;				// no ':X
             if (ONLY_LEX_FLAG(flags, LEX_SPECIAL_WORD)) return TOKEN_LIT;   /* common case */
-			if (!IS_LEX_WORD(cp[1])) {
-				// Various special cases of < << <> >> > >= <=
-				if ((cp[1] == '-' || cp[1] == '+') && IS_LEX_NUMBER(cp[2])) return -TOKEN_WORD;
-				if (cp[1] == '<' || cp[1] == '>') {
-					cp++;
-					if (cp[1] == '<' || cp[1] == '>' || cp[1] == '=') cp++;
-					if (!IS_LEX_DELIMIT(cp[1])) return -TOKEN_LIT;
-					scan_state->end = cp+1;
-					return TOKEN_LIT;
-				}
+			if (cp[1] == '<' || cp[1] == '>') {
+                // tag/word differentiation, mode 2: after '
+                while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
+                if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                    scan_state->end = cp;
+                    return TOKEN_LIT;
+                }
+				return -TOKEN_LIT;
 			}
 			if (cp[1] == '\'') return -TOKEN_WORD;
             type = TOKEN_LIT;
@@ -844,18 +863,19 @@
 			goto scanword;
 
 		case LEX_SPECIAL_GREATER:
-			if (IS_LEX_DELIMIT(cp[1])) return TOKEN_WORD;	// RAMBO 3903 
-			if (cp[1] == '>') {
-				if (IS_LEX_DELIMIT(cp[2])) return TOKEN_WORD;
-				return -TOKEN_WORD;
-			}
 		case LEX_SPECIAL_LESSER:
-			if (IS_LEX_ANY_SPACE(cp[1]) || cp[1] == ']' || cp[1] == 0) return TOKEN_WORD;	// CES.9121 Was LEX_DELIMIT - changed for </tag>
-			if ((cp[0] == '<' && cp[1] == '<') || cp[1] == '=' || cp[1] == '>') {
-				if (IS_LEX_DELIMIT(cp[2])) return TOKEN_WORD;
-				return -TOKEN_WORD;
-			}
-			if (GET_LEX_VALUE(*cp) == LEX_SPECIAL_GREATER) return -TOKEN_WORD;
+            // tag/word differentation, mode 1: top-level initiating < or >
+            /* run to the last of - = < | > + ~
+            ** if the next character is a slash and there's been only one angle
+            ** or if the next character is not a non-} delimiter or a colon followed by a non-} delimiter
+            ** then if opened with < it's tag time, or it's an error otherwise
+            ** else it's an angle-word
+            */
+            while (strchr(ANGLE_WORD_CHARS, *cp)) cp++;
+            if ((IS_LEX_DELIMIT(*cp) || (*cp == ':' && IS_LEX_DELIMIT(cp[1]))) && /* word or set-word */
+                (*scan_state->begin != '<' || cp - 1 != scan_state->begin || *cp != '/') /* closing tag special case */
+               ) return *cp == ':' ? TOKEN_SET : TOKEN_WORD;
+			if (*scan_state->begin == '>') return -TOKEN_WORD;
 			cp = Skip_Tag(cp);
 			if (!cp) return -TOKEN_TAG;
             scan_state->end = cp;
@@ -863,7 +883,6 @@
 
         case LEX_SPECIAL_PLUS:          /* +123 +123.45 +$123 */
         case LEX_SPECIAL_MINUS:         /* -123 -123.45 -$123 */
-            if (HAS_LEX_FLAG(flags, LEX_SPECIAL_AT)) return TOKEN_EMAIL;
             if (HAS_LEX_FLAG(flags, LEX_SPECIAL_DOLLAR)) return TOKEN_MONEY;
             if (HAS_LEX_FLAG(flags, LEX_SPECIAL_COLON)) {
 	            cp = Skip_To_Char(cp, scan_state->end, ':');
@@ -877,8 +896,7 @@
             cp++;
             if (IS_LEX_AT_LEAST_NUMBER(*cp)) goto num;
             if (IS_LEX_SPECIAL(*cp)) {
-                if ((GET_LEX_VALUE(*cp)) >= LEX_SPECIAL_PERIOD) goto next_ls;
-/*              if (*cp == '#') goto hex; */
+                if ((GET_LEX_VALUE(*cp)) >= LEX_SPECIAL_PERIOD && *cp != '#') goto next_ls;
                 if (*cp == '+' || *cp == '-') {
                     type = TOKEN_WORD;
                     goto scanword;
@@ -926,11 +944,19 @@
 					return -TOKEN_BINARY;
 				}
 			}
+			if (*cp == '<' || *cp == '>') {
+                // tag/word differentiation, mode 2: after #
+                while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
+                if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                    scan_state->end = cp;
+                    return TOKEN_ISSUE;
+                }
+				return -TOKEN_ISSUE;
+			}
 			if (cp-1 == scan_state->begin) return TOKEN_ISSUE;
 			else return -TOKEN_INTEGER;
 
         case LEX_SPECIAL_DOLLAR:
-            if (HAS_LEX_FLAG(flags, LEX_SPECIAL_AT)) return TOKEN_EMAIL;
             return TOKEN_MONEY;
 
         default:
@@ -1003,10 +1029,10 @@
 
 scanword:
     if (HAS_LEX_FLAG(flags, LEX_SPECIAL_COLON)) {    /* word:  url:words */
-        if (type != TOKEN_WORD) return type; //-TOKEN_WORD;  /* only valid with WORD (not set or lit) */
         cp = Skip_To_Char(cp, scan_state->end, ':'); /* always returns a pointer (always a ':') */
-        if (cp[1] != '/' && Lex_Map[(REBYTE)cp[1]] < LEX_SPECIAL) { /* a valid delimited word SET? */
-            if (HAS_LEX_FLAGS(flags, ~LEX_FLAG(LEX_SPECIAL_COLON) & LEX_WORD_FLAGS)) return -TOKEN_WORD;
+        if (type != TOKEN_WORD) return (IS_LEX_DELIMIT(cp[1])) ? type : -type; //-TOKEN_WORD;  /* urls are only valid with WORD (not get or lit) */
+        if (cp[1] != '/' && IS_LEX_DELIMIT(cp[1])) { /* a valid delimited word SET, note angle-words already taken care of */
+            if (HAS_LEX_FLAGS(flags, ~LEX_FLAG(LEX_SPECIAL_COLON) & (LEX_WORD_FLAGS | LEX_FLAG(LEX_SPECIAL_LESSER) | LEX_FLAG(LEX_SPECIAL_GREATER)))) return -TOKEN_WORD;
             return TOKEN_SET;
         }
         cp = scan_state->end;   /* then, must be a URL */
@@ -1021,13 +1047,18 @@ scanword:
     if (HAS_LEX_FLAG(flags, LEX_SPECIAL_DOLLAR)) return TOKEN_MONEY;
     if (HAS_LEX_FLAGS(flags, LEX_WORD_FLAGS)) return -type;   /* has chars not allowed in word (eg % \ ) */
 	if (HAS_LEX_FLAG(flags, LEX_SPECIAL_LESSER)) {
-		// Allow word<tag> and word</tag> but not word< word<= word<> etc.
-        cp = Skip_To_Char(cp, scan_state->end, '<');
-		if (cp[1] == '<' || cp[1] == '>' || cp[1] == '=' ||
-			IS_LEX_SPACE(cp[1]) || (cp[1] != '/' && IS_LEX_DELIMIT(cp[1])))
+		// Allow word<tag>, including word</tag>, but not word<>, for all angle-words
+        // BUT only if > is not found before the < [MI#43]
+        cp = Skip_To_Char(bp = cp, scan_state->end, '<');
+        if (HAS_LEX_FLAG(flags, LEX_SPECIAL_GREATER) && cp > Skip_To_Char(bp, scan_state->end, '>'))
+            return -TOKEN_WORD;
+        bp = cp;
+		while (strchr(ANGLE_WORD_CHARS, *++bp)) /* empty body */;
+        // tag/word differentiation mode 3: after a word
+        if (*bp == '.') while (*++bp == '.') /* empty body */;
+        if ((IS_LEX_DELIMIT(*bp) || (*bp == ':' && IS_LEX_DELIMIT(bp[1])))
+            && (*bp != '/' || bp - cp > 1)) /* CTSC */
 			return -type;
-		/*bogus: if (HAS_LEX_FLAG(flags, LEX_SPECIAL_GREATER) &&
-			Skip_To_Char(scan_state->begin, cp, '>')) return -TOKEN_WORD; */
 		scan_state->end = cp;
 	} else if (HAS_LEX_FLAG(flags, LEX_SPECIAL_GREATER)) return -type;
     return type;
@@ -1159,7 +1190,7 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 {
     REBINT token;
     REBCNT len;
-    REBYTE *bp;
+    REBYTE *bp, *tag_origin;
 	REBYTE *ep;
 	REBVAL *value = 0;
 	REBSER *emitbuf = BUF_EMIT;
@@ -1208,6 +1239,7 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
         // If in a path, handle start of path /word or word//word cases:
         if (mode_char == '/' && *bp == '/') {
+printf("/ at bp after scan during path\n"); // deb deb deb
 			SET_NONE(value);
 			emitbuf->tail++;
 			scan_state->begin = bp + 1;
@@ -1223,10 +1255,13 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			value = BLK_TAIL(emitbuf);
 			VAL_SERIES(value) = block;
 			if (token == TOKEN_LIT) {
+				token = TOKEN_PATH;
+				if (*scan_state->end == ':') goto syntax_error;
 				token = REB_LIT_PATH;
 				VAL_SET(BLK_HEAD(block), REB_WORD); // NO_FRAME
 			}
-			else if (IS_GET_WORD(BLK_HEAD(block))) {
+			else if (token == TOKEN_GET) {
+				token = TOKEN_PATH;
 				if (*scan_state->end == ':') goto syntax_error;
 				token = REB_GET_PATH;
 				VAL_SET(BLK_HEAD(block), REB_WORD); // NO_FRAME
@@ -1340,8 +1375,8 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
 		case TOKEN_DECIMAL:
 		case TOKEN_PERCENT:
-			// Do not allow 1.2/abc:
-			if (*ep == '/' || !Scan_Decimal(bp, len, value, 0)) goto syntax_error;
+			// Do not allow 1.2/abc unless in path:
+			if ((*ep == '/' && mode_char != '/') || !Scan_Decimal(bp, len, value, 0)) goto syntax_error;
 			if (bp[len-1] == '%') {
 				VAL_SET(value, REB_PERCENT);
 				VAL_DECIMAL(value) /= 100.0;
@@ -1349,13 +1384,13 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			break;
 
 		case TOKEN_MONEY:
-			// Do not allow $1/$2:
-			if (*ep == '/') {ep++; goto syntax_error;}
+			// Do not allow $1/$2: unless in path
+			if (*ep == '/' && mode_char != '/') {ep++; goto syntax_error;}
 			if (!Scan_Money(bp, len, value)) goto syntax_error;
 			break;
 
 		case TOKEN_TIME:
-			if (bp[len-1] == ':' && mode_char == '/') {	// could be path/10: set
+			if (bp[len-1] == ':' && mode_char == '/' && IS_LEX_DELIMIT(*ep) && *ep != '/') {	// could be path/10: set
 				if (!Scan_Integer(bp, len-1, value)) goto syntax_error;
 				scan_state->end--;	// put ':' back on end but not beginning
 				break;
@@ -1417,11 +1452,23 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
 		case TOKEN_TAG:
 			Scan_Any(bp+1, len-2, value, REB_TAG);
+            tag_origin = scan_state->end - len;
+            // tag/word differentiation mode 4: is the period to be removed
+            for (bp++, len -= 2; strchr(ANGLE_WORD_CHARS, *bp) && len > 0; bp++, len--)
+                /* empty loop body */;
+            if (len > 0 && *bp == '.') { // We need to remove this period only if without it it wouldn't scan right
+                for (len--, bp++; *bp == '.'; bp++, len--) // We'll be removing the period before this position
+                    /* empty loop body */;
+                if (((len > 0 && IS_LEX_DELIMIT(*bp)) || (len > 1 && *bp == ':' && IS_LEX_DELIMIT(bp[1])))
+                    && (*tag_origin != '.' || len <= 1 || bp[1] != '/')) // CTSC
+                    Remove_Series(VAL_SERIES(value), bp - tag_origin - 2, 1);
+            }
 			LABEL_SERIES(VAL_SERIES(value), "scan tag");
 			break;
 
 		case TOKEN_CONSTRUCT:
 			block = Scan_Full_Block(scan_state, ']');
+			ep = scan_state->end;
 			value = BLK_TAIL(emitbuf);
 			emitbuf->tail++; // Protect the block from GC
 //			if (!Construct_Simple(value, block)) {
@@ -1434,9 +1481,10 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			emitbuf->tail--; // Unprotect
 			break;
 
-		case TOKEN_EOF: continue;
+		case TOKEN_EOF:
+            continue;
 
-		default: ;
+		default:
 			SET_NONE(value);
 		}
 
@@ -1482,7 +1530,7 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			if (*ep == '/') {
 				ep++;
 				scan_state->begin = ep;  // skip next /
-				if (*ep != '(' && IS_LEX_DELIMIT(*ep)) {
+				if (strchr("/)];", *ep) || IS_LEX_ANY_SPACE(*ep)) {
 					token = TOKEN_PATH;
 					goto syntax_error;
 				}
@@ -1650,7 +1698,7 @@ exit_block:
 
 	Init_Scan_State(&scan_state, cp, len);
 
-	if (TOKEN_WORD == Scan_Token(&scan_state)) return Make_Word(cp, len);
+	if (TOKEN_WORD == Scan_Token(&scan_state) && scan_state.end == cp + len) return Make_Word(cp, len);
 
 	return 0;
 }
@@ -1682,7 +1730,6 @@ exit_block:
         case LEX_CLASS_SPECIAL:     /* Flag all but first special char: */
 			c = GET_LEX_VALUE(*bp);
 			if (!(LEX_SPECIAL_TICK    == c
-				|| LEX_SPECIAL_COMMA  == c
 				|| LEX_SPECIAL_PERIOD == c
 				|| LEX_SPECIAL_PLUS   == c
 				|| LEX_SPECIAL_MINUS  == c
