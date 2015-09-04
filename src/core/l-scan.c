@@ -668,20 +668,37 @@
     }
 }
 
-/***********************************************************************
-*/
 #define ANGLE_WORD_CHARS "-=<|>+~"
 /*
-**      Angle words begin with < or > and span these 7 characters.
-**      A period disambiguates to tag, and may be not be in the tag:
-**      If the tag content start matches
-**        (zero or more = - < | > ~ + then)
-**        (zero or some periods then)
-**        (an optional : then)
-**        whitespace or ] / ) " { ; ( [ }
-**        AND does not match "/" (the closing tag special case, or CTSC)
-**      then an extra, non-content, period is required for mold or scan.
+**      Angle-words begin with < or > and extend with these 7 characters.
+**      A period disambiguates to tag, and might not be put in the tag:
+**      If the tag contents match
+**        (zero or more - = < | > + ~ followed by)
+**        (zero or some periods followed by)
+**        nothing, or (followed by)
+**        (an optional : followed by)
+**        whitespace or ] / ) " { ; ( [ } followed by
+**        anything,
+**      and do not start with "/" (the closing tag special case, or CTSC)
+**      then an extra, non-content, period is required for mold and scan.
+**
+**      Example tags that do not require a non-content period:
+**      <*> <--*> <=a> <:a"":> <.:a :> <.a .> and </>
+**
+**      Example tags that require a non-content period:
+**      <> <--> <=> <:"":> <: :> <.: :> <. .> and <</>
+**
+**      Here are loadable forms of those last tags (different forms may exist):
+**      <.> <.--> <=.> <:."":> <.: :> <..: :> <.. .> and <.</>
 */
+#define IS_ANGLE_CHAR(c) ( \
+    ((c) == ANGLE_WORD_CHARS[0]) || \
+    ((c) == ANGLE_WORD_CHARS[1]) || \
+    ((c) == ANGLE_WORD_CHARS[2]) || \
+    ((c) == ANGLE_WORD_CHARS[3]) || \
+    ((c) == ANGLE_WORD_CHARS[4]) || \
+    ((c) == ANGLE_WORD_CHARS[5]) || \
+    ((c) == ANGLE_WORD_CHARS[6]) )
       
 /***********************************************************************
 **
@@ -768,10 +785,10 @@
 				scan_state->begin--;
 				// Fast easy case:
 		        if (ONLY_LEX_FLAG(flags, LEX_SPECIAL_WORD)) return TOKEN_REFINE;
-                // tag/word differentiation, mode 2: after /
+                // tag/word differentiation, mode 1 (no set, no CTSC), after /
                 if (*cp == '<' || *cp == '>') {
-                    while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
-                    if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                    cp++; while (IS_ANGLE_CHAR(*cp)) cp++;
+                    if (IS_LEX_DELIMIT(*cp)) {
                         scan_state->end = cp;
                         return TOKEN_REFINE;
                     }
@@ -822,10 +839,12 @@
             if (ONLY_LEX_FLAG(flags, LEX_SPECIAL_WORD)) return TOKEN_GET;   /* common case */
 			if (cp[1] == '\'') return -TOKEN_WORD;
 			if (cp[1] == '<' || cp[1] == '>') {
-                // tag/word differentiation, mode 2: after :
-                while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
-                if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                // tag/word differentiation, mode 2 (no set), after :
+                cp++; while (IS_ANGLE_CHAR(*cp)) cp++;
+                if (IS_LEX_DELIMIT(*cp)) {
                     scan_state->end = cp;
+                    if (*cp == '/' && scan_state->begin == cp - 2 && cp[-1] == '<') /* CTSC */
+                        return -TOKEN_PATH;
                     return TOKEN_GET;
                 }
 				return -TOKEN_GET;
@@ -842,10 +861,12 @@
 			if (cp[1] == ':') return -TOKEN_LIT;				// no ':X
             if (ONLY_LEX_FLAG(flags, LEX_SPECIAL_WORD)) return TOKEN_LIT;   /* common case */
 			if (cp[1] == '<' || cp[1] == '>') {
-                // tag/word differentiation, mode 2: after '
-                while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
-                if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                // tag/word differentiation, mode 2 (no set), after '
+                cp++; while (IS_ANGLE_CHAR(*cp)) cp++;
+                if (IS_LEX_DELIMIT(*cp)) {
                     scan_state->end = cp;
+                    if (*cp == '/' && scan_state->begin == cp - 2 && cp[-1] == '<') /* CTSC */
+                        return -TOKEN_PATH;
                     return TOKEN_LIT;
                 }
 				return -TOKEN_LIT;
@@ -864,16 +885,10 @@
 
 		case LEX_SPECIAL_GREATER:
 		case LEX_SPECIAL_LESSER:
-            // tag/word differentation, mode 1: top-level initiating < or >
-            /* run to the last of - = < | > + ~
-            ** if the next character is a slash and there's been only one angle
-            ** or if the next character is not a non-} delimiter or a colon followed by a non-} delimiter
-            ** then if opened with < it's tag time, or it's an error otherwise
-            ** else it's an angle-word
-            */
-            while (strchr(ANGLE_WORD_CHARS, *cp)) cp++;
-            if ((IS_LEX_DELIMIT(*cp) || (*cp == ':' && IS_LEX_DELIMIT(cp[1]))) && /* word or set-word */
-                (*scan_state->begin != '<' || cp - 1 != scan_state->begin || *cp != '/') /* closing tag special case */
+            // tag/word differentation, mode 3, top-level initiating < or >
+            cp++; while (IS_ANGLE_CHAR(*cp)) cp++;
+            if ((IS_LEX_DELIMIT(*cp) || (*cp == ':' && IS_LEX_DELIMIT(cp[1]))) &&
+                (cp - 1 != scan_state->begin || cp[-1] != '<' || *cp != '/') /* CTSC */
                ) return *cp == ':' ? TOKEN_SET : TOKEN_WORD;
 			if (*scan_state->begin == '>') return -TOKEN_WORD;
 			cp = Skip_Tag(cp);
@@ -945,9 +960,9 @@
 				}
 			}
 			if (*cp == '<' || *cp == '>') {
-                // tag/word differentiation, mode 2: after #
-                while (strchr(ANGLE_WORD_CHARS, *++cp)) /* empty body */;
-                if (IS_LEX_DELIMIT(*cp)) { /* word only, no set */
+                // tag/word differentiation, mode 1 (no set, no CTSC), after #
+                cp++; while (IS_ANGLE_CHAR(*cp)) cp++;
+                if (IS_LEX_DELIMIT(*cp)) {
                     scan_state->end = cp;
                     return TOKEN_ISSUE;
                 }
@@ -1053,8 +1068,8 @@ scanword:
         if (HAS_LEX_FLAG(flags, LEX_SPECIAL_GREATER) && cp > Skip_To_Char(bp, scan_state->end, '>'))
             return -TOKEN_WORD;
         bp = cp;
-		while (strchr(ANGLE_WORD_CHARS, *++bp)) /* empty body */;
-        // tag/word differentiation mode 3: after a word
+		bp++; while (IS_ANGLE_CHAR(*bp)) bp++;
+        // tag/word differentiation, mode 4 (word, set, CTSC), when a tag comes after a word
         if (*bp == '.') while (*++bp == '.') /* empty body */;
         if ((IS_LEX_DELIMIT(*bp) || (*bp == ':' && IS_LEX_DELIMIT(bp[1])))
             && (*bp != '/' || bp - cp > 1)) /* CTSC */
@@ -1190,7 +1205,7 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 {
     REBINT token;
     REBCNT len;
-    REBYTE *bp, *tag_origin;
+    REBYTE *bp;
 	REBYTE *ep;
 	REBVAL *value = 0;
 	REBSER *emitbuf = BUF_EMIT;
@@ -1204,6 +1219,8 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 	REBYTE *start_line = scan_state->head_line;
 	// just_once for load/next see Load_Script for more info.
 	REBOOL just_once = GET_FLAG(scan_state->opts, SCAN_NEXT);
+    // some processing has to be done on tag tokens after they are accepted
+    REBYTE *tag_first_content;
 
 	CHECK_STACK(&token);
 	
@@ -1239,7 +1256,6 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
         // If in a path, handle start of path /word or word//word cases:
         if (mode_char == '/' && *bp == '/') {
-printf("/ at bp after scan during path\n"); // deb deb deb
 			SET_NONE(value);
 			emitbuf->tail++;
 			scan_state->begin = bp + 1;
@@ -1295,13 +1311,14 @@ printf("/ at bp after scan during path\n"); // deb deb deb
 		case TOKEN_LIT:
 		case TOKEN_GET:
 			if (ep[-1] == ':') {
-				if (len == 1 || mode_char != '/') goto syntax_error;
+				if (len == 1 || mode_char != '/' || *ep == '/') goto syntax_error;
 				len--, scan_state->end--;
 			}
 			bp++;
 		case TOKEN_SET:
 			len--;
 			if (mode_char == '/' && token == TOKEN_SET) {
+                if (*ep == '/') goto syntax_error; // normal words adsorb into TOKEN_URL, but angle-words can end up here
 				token = TOKEN_WORD; // will be a PATH_SET
 				scan_state->end--;	// put ':' back on end but not beginning
 			}
@@ -1451,17 +1468,17 @@ printf("/ at bp after scan during path\n"); // deb deb deb
 			break;
 
 		case TOKEN_TAG:
-			Scan_Any(bp+1, len-2, value, REB_TAG);
-            tag_origin = scan_state->end - len;
-            // tag/word differentiation mode 4: is the period to be removed
-            for (bp++, len -= 2; strchr(ANGLE_WORD_CHARS, *bp) && len > 0; bp++, len--)
-                /* empty loop body */;
-            if (len > 0 && *bp == '.') { // We need to remove this period only if without it it wouldn't scan right
-                for (len--, bp++; *bp == '.'; bp++, len--) // We'll be removing the period before this position
-                    /* empty loop body */;
-                if (((len > 0 && IS_LEX_DELIMIT(*bp)) || (len > 1 && *bp == ':' && IS_LEX_DELIMIT(bp[1])))
-                    && (*tag_origin != '.' || len <= 1 || bp[1] != '/')) // CTSC
-                    Remove_Series(VAL_SERIES(value), bp - tag_origin - 2, 1);
+			Scan_Any(tag_first_content = bp+1, len-2, value, REB_TAG);
+            // tag/word differentiation, mode 5 (set, word, CTSC), period removal
+            bp++, len -= 2; while(IS_ANGLE_CHAR(*bp)) bp++, len--;
+            // assert (len > 0);
+            if (*bp == '.') { // remove the period only if without it it wouldn't load right
+                bp++, len--; while (len > 0 && *bp == '.') bp++, len--;
+                if (!len /* dotted tag complete */
+                    || (IS_LEX_DELIMIT(*bp) /* dotted delimited word */
+                        && (bp != tag_first_content || *bp != '/')) /* rule out CTSC */
+                    || (len > 1 && *bp == ':' && IS_LEX_DELIMIT(bp[1]))) /* dotted delimited set-word */
+                    Remove_Series(VAL_SERIES(value), bp - tag_first_content - 1, 1);
             }
 			LABEL_SERIES(VAL_SERIES(value), "scan tag");
 			break;
@@ -1708,42 +1725,54 @@ exit_block:
 **
 */  REBCNT Scan_Issue(REBYTE *cp, REBCNT len)
 /*
-**		Scan an issue word, allowing special characters.
+**		Scan an issue word, allowing it to look like a number.
 **
 ***********************************************************************/
 {
 	REBYTE *bp;
-	REBCNT l = len;
-	REBCNT c;
 
 	if (len == 0) return 0;
-    while (IS_LEX_SPACE(*cp)) cp++; /* skip white space */
+    while (IS_LEX_SPACE(*cp)) cp++, len--; /* skip white space */
 
 	bp = cp;
 
-    while (l > 0) {
-        switch (GET_LEX_CLASS(*bp)) {
+#if 0 // "Use #xFF instead of #FF" feature not yet implemented
+    /* can't start like a numeric */
+    if (IS_LEX_NUMBER(*cp) ||
+        (strchr("+-.,", *cp) && IS_LEX_NUMBER(cp[1])) ||
+        (strchr("+-", *cp) && strchr(".,", cp[1]) && IS_LEX_NUMBER(cp[2]))
+       ) return 0;
+
+    /* can't start with a tick */
+    if (*cp == '\'') return 0;
+#endif
+
+    /* can't start with < or > unless it's a valid angle-word */
+    // tag/word differentiation, mode 6 (no set, no CTSC), issue from string
+    if (*cp == '<' || *cp == '>') {
+        cp++; while (cp - bp < len && IS_ANGLE_CHAR(*cp)) cp++;
+        if (cp - bp != len) return 0;
+    }
+
+    /* only word and numeric (digits and + - . ') characters are allowed */
+    while (cp - bp < len) {
+        switch (GET_LEX_CLASS(*cp)) {
 
         case LEX_CLASS_DELIMIT:
             return 0;
 
-        case LEX_CLASS_SPECIAL:     /* Flag all but first special char: */
-			c = GET_LEX_VALUE(*bp);
-			if (!(LEX_SPECIAL_TICK    == c
-				|| LEX_SPECIAL_PERIOD == c
-				|| LEX_SPECIAL_PLUS   == c
-				|| LEX_SPECIAL_MINUS  == c
-				|| LEX_SPECIAL_TILDE  == c
-			))
-			return 0;
+        case LEX_CLASS_SPECIAL:
+            if ( (*cp) != '+' &&
+                 (*cp) != '-' &&
+                 (*cp) != '.' &&
+                 (*cp) != '\'')
+                return 0;
+            // fall through
 
-        case LEX_CLASS_WORD:
-        case LEX_CLASS_NUMBER:
-            bp++;
-			l--;
-            break;
+        default:
+            cp++;
         }
     }
 
-	return Make_Word(cp, len);
+	return Make_Word(bp, len);
 }
