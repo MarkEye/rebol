@@ -1047,7 +1047,9 @@ scanword: // unreachable otherwise
 			return -TOKEN_WORD;
 		bp = cp;
 		bp++; while (IS_ANGLE_CHAR(*bp)) bp++;
-		if (*bp == '.') while (*++bp == '.') /* empty body */;
+#ifdef LEX_TAG_ESCAPE_CHAR
+		if (*bp == LEX_TAG_ESCAPE_CHAR) while (*++bp == LEX_TAG_ESCAPE_CHAR) /* empty body */;
+#endif
 		if ((IS_LEX_DELIMIT(*bp) || (*bp == ':' && IS_LEX_DELIMIT(bp[1])))
 			&& (*bp != '/' || bp - cp > 1)) /* CTSC */
 			return -type;
@@ -1409,14 +1411,16 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			// tag/word differentiation mode 5: is the period to be removed
 			bp++; len-=2; while (IS_ANGLE_CHAR(*bp)) bp++, len--;
 			// assert (len > 0); // if they are all angle-chars then it wouldn't be a tag!
-			if (*bp == '.') { // remove only if without it it wouldn't scan right
-				bp++; len--; while (len > 0 && *bp == '.') bp++, len--;
+#ifdef LEX_TAG_ESCAPE_CHAR
+			if (*bp == LEX_TAG_ESCAPE_CHAR) { // remove only if without it it wouldn't scan right
+				bp++; len--; while (len > 0 && *bp == LEX_TAG_ESCAPE_CHAR) bp++, len--;
 				if (len == 0 /* tag is only angles and dots */
 					|| (IS_LEX_DELIMIT(*bp) /* dotted delimited word */
 						&& (bp != tag_first_content || *bp != '/')) /* rule out CTSC */
 					|| (len > 1 && *bp == ':' && IS_LEX_DELIMIT(bp[1]))) /* dotted delimited set-word */
 					Remove_Series(VAL_SERIES(value), bp - tag_first_content - 1, 1);
 			}
+#endif
 			LABEL_SERIES(VAL_SERIES(value), "scan tag");
 			break;
 
