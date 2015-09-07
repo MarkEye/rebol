@@ -402,7 +402,7 @@
 /*
 **      Scan a quoted string, handling all the escape characters.
 **
-**		The result will be put into the temporary MOLD_BUF unistring.
+**		The result will be put into the temporary unistring mold buffer.
 **
 ***********************************************************************/
 {
@@ -480,7 +480,7 @@
 **
 **		Returns continuation point or zero for error.
 **
-**		Put result into the MOLD_BUF as uni-chars.
+**		Put result into the temporary mold buffer as uni-chars.
 **
 ***********************************************************************/
 {
@@ -878,7 +878,6 @@
             if (IS_LEX_AT_LEAST_NUMBER(*cp)) goto num;
             if (IS_LEX_SPECIAL(*cp)) {
                 if ((GET_LEX_VALUE(*cp)) >= LEX_SPECIAL_PERIOD) goto next_ls;
-/*              if (*cp == '#') goto hex; */
                 if (*cp == '+' || *cp == '-') {
                     type = TOKEN_WORD;
                     goto scanword;
@@ -891,11 +890,6 @@
         case LEX_SPECIAL_POUND:
         pound:
             cp++;
-/*        hex:
-          if (HAS_LEX_FLAGS(flags, ~(LEX_FLAG(LEX_SPECIAL_POUND) | LEX_FLAG(LEX_SPECIAL_PERIOD)
-                        | LEX_FLAG(LEX_SPECIAL_TICK) | LEX_FLAG(LEX_SPECIAL_WORD)))) return -TOKEN_INTEGER;
-*/
-/*        if (HAS_LEX_FLAG(flags, LEX_SPECIAL_PERIOD)) return TOKEN_BYTES; */
 			if (*cp == '[') {
 				scan_state->end = ++cp;
 				return TOKEN_CONSTRUCT;
@@ -994,16 +988,9 @@
         return -TOKEN_WORD;
     }
 
-#if ndef	// unreachable code
-    /* avoid '123 :123 from scanning as a word.... */
-    if (IS_LEX_WORD(cp[1]) && !HAS_LEX_FLAGS(flags, LEX_WORD_FLAGS))
-        return TOKEN_LIT;
-    return -TOKEN_WORD;
-#endif
-
-scanword:
+scanword: // unreachable otherwise
     if (HAS_LEX_FLAG(flags, LEX_SPECIAL_COLON)) {    /* word:  url:words */
-        if (type != TOKEN_WORD) return type; //-TOKEN_WORD;  /* only valid with WORD (not set or lit) */
+        if (type != TOKEN_WORD) return type; /* only valid with WORD (not set or lit) */
         cp = Skip_To_Char(cp, scan_state->end, ':'); /* always returns a pointer (always a ':') */
         if (cp[1] != '/' && Lex_Map[(REBYTE)cp[1]] < LEX_SPECIAL) { /* a valid delimited word SET? */
             if (HAS_LEX_FLAGS(flags, ~LEX_FLAG(LEX_SPECIAL_COLON) & LEX_WORD_FLAGS)) return -TOKEN_WORD;
@@ -1026,8 +1013,6 @@ scanword:
 		if (cp[1] == '<' || cp[1] == '>' || cp[1] == '=' ||
 			IS_LEX_SPACE(cp[1]) || (cp[1] != '/' && IS_LEX_DELIMIT(cp[1])))
 			return -type;
-		/*bogus: if (HAS_LEX_FLAG(flags, LEX_SPECIAL_GREATER) &&
-			Skip_To_Char(scan_state->begin, cp, '>')) return -TOKEN_WORD; */
 		scan_state->end = cp;
 	} else if (HAS_LEX_FLAG(flags, LEX_SPECIAL_GREATER)) return -type;
     return type;
@@ -1048,7 +1033,6 @@ scanword:
     scan_state->line_count = 1;
 	scan_state->opts = 0;
 	scan_state->errors = 0;
-//    scan_state->error_id = (REBYTE *)"";
 }
 
 
@@ -1116,36 +1100,6 @@ scanword:
 	}
 }
 
-#ifdef not_used
-//!!!
-/***********************************************************************
-**
-	REBOOL Construct_Simple(REBVAL *value, REBSER *spec)
-/*
-**		Handle special #[type] constructs. These are used to
-**		boot REBOL, so must not require binding.
-**
-***********************************************************************/
-{
-	REBVAL *blk = BLK_HEAD(spec);
-	if (!IS_WORD(blk)) return FALSE;
-	switch (VAL_WORD_SYM(blk)-1) {
-	case SYM_NONE:
-		SET_NONE(value);
-		break;
-	case SYM_FALSE:
-		SET_LOGIC(value, FALSE);
-		break;
-	case SYM_TRUE:
-		SET_LOGIC(value, TRUE);
-		break;
-	default:
-		return FALSE;
-	}
-	return TRUE;
-}
-#endif
-
 extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
 /***********************************************************************
@@ -1179,8 +1133,6 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 	if (just_once)
 		CLR_FLAG(scan_state->opts, SCAN_NEXT); // no deeper
 
-	//scan_state->error_id = (REBYTE *) "";
-
     while (
 #ifdef COMP_LINES
 		linenum=scan_state->line_count,
@@ -1204,7 +1156,6 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
 		value = BLK_TAIL(emitbuf);
 		SET_END(value);
-		// Line opt was set here. Moved to end in 3.0.
 
         // If in a path, handle start of path /word or word//word cases:
         if (mode_char == '/' && *bp == '/') {
@@ -1218,7 +1169,6 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
         if ((token == TOKEN_PATH || ((token == TOKEN_WORD || token == TOKEN_LIT ||
 				token == TOKEN_GET) && *ep == '/'))
 					&& mode_char != '/') {
-			//line = VAL_GET_LINE(value);
 			block = Scan_Block(scan_state, '/');  // (could realloc emitbuf)
 			value = BLK_TAIL(emitbuf);
 			VAL_SERIES(value) = block;
@@ -1237,10 +1187,8 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 					scan_state->begin = ++(scan_state->end);
 				} else token = REB_PATH;
 			}
-//			if (IS_SET_WORD(BLK_SKIP(block, block->tail - 1)
 			VAL_SET(value, token);
 			VAL_INDEX(value) = 0;
-			//if (line) line = FALSE, VAL_SET_LINE(value);
 			token = TOKEN_PATH;
         } else {
             ACCEPT_TOKEN(scan_state);
@@ -1250,9 +1198,9 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 		switch (token) {  // (idea is that compiler selects computed branch)
 
 		case TOKEN_LINE:
-			#ifdef TEST_SCAN
+#ifdef TEST_SCAN
 			Wait_User("next...");
-			#endif
+#endif
 			line = TRUE;
 			scan_state->head_line = ep;
 			continue;
@@ -1295,7 +1243,6 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
 		case TOKEN_BLOCK:
 		case TOKEN_PAREN:
-			//line = VAL_GET_LINE(value);
 			block = Scan_Block(scan_state, (REBYTE)((token == TOKEN_BLOCK) ? ']' : ')'));
 			// (above line could have realloced emitbuf)
 			ep = scan_state->end;
@@ -1308,7 +1255,6 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			VAL_SERIES(value) = block;
 			VAL_SET(value, (REBYTE)((token == TOKEN_BLOCK) ? REB_BLOCK : REB_PAREN));
 			VAL_INDEX(value) = 0;
-			//if (line) line = FALSE, VAL_SET_LINE(value);
 			break;
 
 		case TOKEN_PATH:
@@ -1424,9 +1370,7 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			block = Scan_Full_Block(scan_state, ']');
 			value = BLK_TAIL(emitbuf);
 			emitbuf->tail++; // Protect the block from GC
-//			if (!Construct_Simple(value, block)) {
 			Bind_Block(Lib_Context, BLK_HEAD(block), BIND_ALL|BIND_DEEP);
-			//Bind_Global_Block(BLK_HEAD(block));
 			if (!Construct_Value(value, block)) {
 				if (IS_END(value)) Set_Block(value, block);
 				Trap1(RE_MALCONSTRUCT, value);
@@ -1445,12 +1389,12 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 			VAL_SET_LINE(value);
 		}
 
-		#ifdef TEST_SCAN
+#ifdef TEST_SCAN
 		Print((REBYTE*)"%s - %s", Token_Names[token], Use_Buf(bp,ep));
 		if (VAL_TYPE(value) >= REB_STRING && VAL_TYPE(value) <= REB_URL)
 			Print_Str(VAL_BIN(value));
 		//Wait_User(0);
-		#endif
+#endif
 
 #ifdef COMP_LINES
 		VAL_LINE(value)=linenum;
@@ -1498,16 +1442,15 @@ extern REBSER *Scan_Full_Block(SCAN_STATE *scan_state, REBYTE mode_char);
 
 exit_block:
 	if (line && value) VAL_SET_LINE(value);
-	#ifdef TEST_SCAN
+#ifdef TEST_SCAN
 	Print((REBYTE*)"block of %d values ", emitbuf->tail - begin); //Wait_User("...");
-	#endif
+#endif
 
 	len = emitbuf->tail;
 	block = Copy_Values(BLK_SKIP(emitbuf, begin), len - begin);
 	LABEL_SERIES(block, "scan block");
 	SERIES_SET_FLAG(block, SER_MON);
 	emitbuf->tail = begin;
-//!!!!	if (value) VAL_OPTS(BLK_TAIL(block)) = VAL_OPTS(value); // save NEWLINE marker
 
 	return block;
 }
@@ -1538,16 +1481,10 @@ exit_block:
 **		Scan source code, given a scan state. Allows scan of source
 **		code a section at a time (used for LOAD/next).
 **
-**		Note: Renamed this from Scan_Trap (a bad name, no trap used)
-**
 ***********************************************************************/
 {
-//	REBSER *ser;
-
 	BLK_RESET(BUF_EMIT); // Prevents growth (when errors are thrown)
 	return Scan_Block(scan_state, mode_char);
-//	Set_Block(Temp_Scan_Value, ser);
-//	return Temp_Scan_Value;
 }
 
 
